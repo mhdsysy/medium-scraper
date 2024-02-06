@@ -1,2 +1,6 @@
 venv/
 medium-articles/
+
+.env
+
+.DS_Store
