@@ -12,29 +12,11 @@ load_dotenv()
 
 
 class MediumScraper:
-    def __init__(self):
-        self.tagSlug, self.min_claps = self._load_arguments()
-        self.min_claps = self._convert_claps(self.min_claps)
+    def __init__(self,tag_slug, min_claps):
+        self.tag_slug, self.min_claps = tag_slug, min_claps
         self.headers = self._load_headers()
         self.graphql_url = 'https://medium.com/_/graphql'
         self.downloaded_articles = self._generate_downloaded_articles_hashset()
-
-    @staticmethod
-    def _convert_claps(claps_str):
-        """Convert compact clap format (e.g., "1.1K") to a numeric value."""
-        multiplier = {'K': 1000, 'M': 1000000}
-        if claps_str[-1] in multiplier:
-            return float(claps_str[:-1]) * multiplier[claps_str[-1]]
-        return int(claps_str)
-
-    @staticmethod
-    def _load_arguments():
-        if len(sys.argv) < 3:
-            print("Usage: python script.py <tagSlug> <min_claps>")
-            sys.exit(1)
-        tagSlug = sys.argv[1]
-        min_claps = sys.argv[2]
-        return tagSlug, min_claps
 
     @staticmethod
     def is_json(response_text):
@@ -145,7 +127,7 @@ class MediumScraper:
         """Fetch an article, convert it to markdown, and save locally."""
         print(f"Fetching article {url}")
         article_folder_name = url.split('/')[-1]
-        article_folder_path = os.path.join("medium-articles", self.tagSlug, str(self.min_claps), article_folder_name)
+        article_folder_path = os.path.join("medium-articles", self.tag_slug, str(self.min_claps), article_folder_name)
         file_name = f"{article_folder_name}.md"
         file_path = os.path.join(article_folder_path, file_name)
         article_id = hashlib.md5(file_name.lower().encode()).hexdigest()
@@ -193,7 +175,7 @@ class MediumScraper:
         payload = [{
             "operationName": "WebInlineTopicFeedQuery",
             "variables": {
-                "tagSlug": f"{self.tagSlug}",
+                "tagSlug": f"{self.tag_slug}",
                 "paging": {"from": f"{from_page}", "limit": 25},
                 "skipCache": True
             },
@@ -240,5 +222,12 @@ class MediumScraper:
 
 
 if __name__ == "__main__":
-    scraper = MediumScraper()
-    scraper.run()
+    if len(sys.argv) < 3:
+        print("Usage: python script.py <tagSlug> <min_claps>")
+        sys.exit(1)
+    tag_slug = sys.argv[1]
+    min_claps = int(sys.argv[2])
+    while min_claps > 0:
+        scraper = MediumScraper(tag_slug=tag_slug, min_claps=min_claps)
+        min_claps -= 500
+        scraper.run()
