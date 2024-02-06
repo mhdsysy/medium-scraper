@@ -143,6 +143,7 @@ class MediumScraper:
 
     def _fetch_and_convert_article_section_to_markdown(self, url):
         """Fetch an article, convert it to markdown, and save locally."""
+        print(f"Fetching article {url}")
         article_folder_name = url.split('/')[-1]
         article_folder_path = os.path.join("medium-articles", self.tagSlug, str(self.min_claps), article_folder_name)
         file_name = f"{article_folder_name}.md"
@@ -217,7 +218,8 @@ class MediumScraper:
                     print(full_url)
                     clap_count = self._fetch_clap_count(post_id)
                     if clap_count < self.min_claps:
-                        print(f"Skipping this article, since the number of it's claps {clap_count} is lower than the minimum of {self.min_claps}.")
+                        print(f"Skipping this article {full_url}, since the number of it's claps {clap_count} is lower than the minimum of {self.min_claps}.")
+                        continue
                     self._fetch_and_convert_article_section_to_markdown(full_url)
                 return True
             else:
