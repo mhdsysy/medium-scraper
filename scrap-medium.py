@@ -1,6 +1,8 @@
 import json
 import os
+import random
 import sys
+import time
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -45,16 +47,44 @@ class MediumScraper:
         # Log the extracted URL
         print(f"Extracted highest resolution image URL: {highest_resolution_image}")
         return highest_resolution_image
+    
+    @staticmethod
+    def _load_headers():
+        """Load request headers including environment variables."""
+        cookie_value = os.getenv("COOKIE")
+        return {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "en",
+            "Cache-Control": "max-age=0",
+            # Use the cookie value from the .env file
+            "Cookie": f'{cookie_value}',
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        }
 
-    def _download_image(self, image_url, image_name, article_folder):
+    @staticmethod
+    def _generate_downloaded_articles_hashset():
+        """Generate a hashset of all downloaded articles' identifiers."""
+        hashset = set()
+        for root, dirs, files in os.walk("medium-articles"):
+            for file in files:
+                if file.endswith(".md"):
+                    file_name = file.title().lower()
+                    print(f"Caching file {file_name}")
+                    # Use a hash of the file name as the unique identifier
+                    article_id = hashlib.md5(file_name.encode()).hexdigest()
+                    hashset.add(article_id)
+        return hashset
+    
+    def _download_image(self, image_url, article_folder):
         images_directory = os.path.join(article_folder, "images")
         # Ensure base and article-specific folder exists
         if not os.path.exists(images_directory):
             os.makedirs(images_directory)
 
+        hashed_image_name = hashlib.md5(image_url.encode()).hexdigest()
         # Construct the full path for the image
-        # Assuming PNG format, adjust if necessary
-        image_path = os.path.join(images_directory, f"{image_name}.png")
+        image_path = os.path.join(images_directory, f"{hashed_image_name}.png")
 
         # Download and save the image
         print(f"Downloading image: {image_url} to {image_path}")
@@ -73,32 +103,6 @@ class MediumScraper:
             print(f"Failed to download {image_url}")
             return None
 
-    def _load_headers(self):
-        """Load request headers including environment variables."""
-        cookie_value = os.getenv("COOKIE")
-        return {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en",
-            "Cache-Control": "max-age=0",
-            # Use the cookie value from the .env file
-            "Cookie": f'{cookie_value}',
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-        }
-
-    def _generate_downloaded_articles_hashset(self):
-        """Generate a hashset of all downloaded articles' identifiers."""
-        hashset = set()
-        for root, dirs, files in os.walk("medium-articles"):
-            for file in files:
-                if file.endswith(".md"):
-                    file_name = file.title().lower()
-                    print(f"Caching file {file_name}")
-                    # Use the file name or a hash of the file path as the unique identifier
-                    article_id = hashlib.md5(file_name.encode()).hexdigest()
-                    hashset.add(article_id)
-        return hashset
-
     # Function to fetch clap count for a given Medium post
     def _fetch_clap_count(self, post_id):
         # Define the GraphQL query and variables
@@ -113,6 +117,9 @@ class MediumScraper:
         ]
 
         response = requests.post(self.graphql_url, headers=self.headers, json=payload)
+        if self.is_json(response.text) and self._check_for_errors(response.json()):
+                print(response.text)
+                sys.exit(1)
         if response.status_code == 200:
             # Parse the JSON response
             json_data = response.json()
@@ -122,6 +129,25 @@ class MediumScraper:
         else:
             print(f"Failed to fetch clap count: HTTP {response.status_code}")
             return None
+
+    def _preprocess_html_for_images(self, soup):
+        figures = soup.find_all('figure')
+        image_info_list = []
+        for i, figure in enumerate(figures):
+            picture = figure.find('picture')
+            if picture:
+                source = picture.find('source')
+                if source and 'srcset' in source.attrs:
+                    srcset = source['srcset']
+                    highest_resolution_image = self._extract_highest_resolution_image(srcset)
+                    # Create a unique placeholder for each image
+                    placeholder = f"{{{{IMAGE_PLACEHOLDER_{i}}}}}"
+                    figure.replace_with(placeholder)
+                     # Modified placeholder for markdownify's escaped format
+                    escaped_placeholder = placeholder.replace("_", "\\_")
+                    image_info_list.append((highest_resolution_image, escaped_placeholder))
+        return image_info_list
+
 
     def _fetch_and_convert_article_section_to_markdown(self, url):
         """Fetch an article, convert it to markdown, and save locally."""
@@ -145,9 +171,14 @@ class MediumScraper:
                 os.makedirs(article_folder_path)
             article_section = soup.find('article')
             if article_section:
-                self._process_article_images(article_section, article_folder_path)
+                image_info_list = self._preprocess_html_for_images(article_section)
                 markdown_content = md(str(article_section), heading_style="ATX")
-
+                 # Replace placeholders with actual image paths
+                for image_url, placeholder in image_info_list:
+                    relative_image_path = self._download_image(image_url, article_folder_path)
+                    if relative_image_path:
+                        markdown_content = markdown_content.replace(placeholder, f"![]({relative_image_path})", 1)
+                
                 with open(file_path, 'w', encoding='utf-8') as file:
                     file.write(markdown_content)
                 print(f"Article section saved to {file_path}")
@@ -155,20 +186,6 @@ class MediumScraper:
                 print("Article section not found")
         else:
             print("Failed to retrieve the article")
-
-    def _process_article_images(self, article_section, article_folder_path):
-        """Process and download all images within an article section."""
-        figures = article_section.find_all('figure')
-        for figure in figures:
-            picture = figure.find('picture')
-            figcaption = figure.find('figcaption')
-            if picture and figcaption:
-                source = picture.find('source')
-                if source and 'srcset' in source.attrs:
-                    srcset = source['srcset']
-                    highest_resolution_image = self._extract_highest_resolution_image(srcset)
-                    image_name = figcaption.find('strong').text if figcaption.find('strong') else "image"
-                    self._download_image(highest_resolution_image, image_name, article_folder_path)
 
     def fetch_posts(self, from_page):
         """Fetch posts from Medium and process them."""
@@ -203,6 +220,7 @@ class MediumScraper:
                         print(f"Skipping this article {full_url}, since the number of it's claps {clap_count} is lower than the minimum of {self.min_claps}.")
                         continue
                     self._fetch_and_convert_article_section_to_markdown(full_url)
+                    time.sleep(random.uniform(1, 5))
                 return True
             else:
                 print(f"No more posts found. The server returned the following status code '{response.status_code}' and the following response payload '{response.text}'.")
@@ -220,14 +238,11 @@ class MediumScraper:
                 break
             from_page += 25
 
-
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python script.py <tagSlug> <min_claps>")
         sys.exit(1)
     tag_slug = sys.argv[1]
     min_claps = int(sys.argv[2])
-    while min_claps > 0:
-        scraper = MediumScraper(tag_slug=tag_slug, min_claps=min_claps)
-        min_claps -= 500
-        scraper.run()
+    scraper = MediumScraper(tag_slug=tag_slug, min_claps=min_claps)
+    scraper.run()
