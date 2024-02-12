@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import random
@@ -9,16 +10,19 @@ from dotenv import load_dotenv
 from markdownify import markdownify as md
 import hashlib
 
+ARTICLES_DIRECTORY = 'medium-articles'
+
 # Load environment variables
 load_dotenv()
 
 
 class MediumScraper:
-    def __init__(self,tag_slug, min_claps):
-        self.tag_slug, self.min_claps = tag_slug, min_claps
+    def __init__(self, min_claps):
+        self.min_claps = min_claps
         self.headers = self._load_headers()
         self.graphql_url = 'https://medium.com/_/graphql'
         self.downloaded_articles = self._generate_downloaded_articles_hashset()
+        self.tag_slugs = self._fetch_tag_slugs()
 
     @staticmethod
     def is_json(response_text):
@@ -45,9 +49,10 @@ class MediumScraper:
         images = srcset.split(",")
         highest_resolution_image = images[-1].strip().split(" ")[0]
         # Log the extracted URL
-        print(f"Extracted highest resolution image URL: {highest_resolution_image}")
+        print(
+            f"Extracted highest resolution image URL: {highest_resolution_image}")
         return highest_resolution_image
-    
+
     @staticmethod
     def _load_headers():
         """Load request headers including environment variables."""
@@ -66,7 +71,7 @@ class MediumScraper:
     def _generate_downloaded_articles_hashset():
         """Generate a hashset of all downloaded articles' identifiers."""
         hashset = set()
-        for root, dirs, files in os.walk("medium-articles"):
+        for root, dirs, files in os.walk(ARTICLES_DIRECTORY):
             for file in files:
                 if file.endswith(".md"):
                     file_name = file.title().lower()
@@ -75,7 +80,30 @@ class MediumScraper:
                     article_id = hashlib.md5(file_name.encode()).hexdigest()
                     hashset.add(article_id)
         return hashset
-    
+
+    def _fetch_tag_slugs(self):
+        payload = [
+            {
+                "operationName": "HomeMainContentHeaderQuery",
+                "variables": {},
+                "query": "query HomeMainContentHeaderQuery($paging: PagingOptions) {\n  viewer {\n    ...HomeFeedNavbar_viewer\n    __typename\n  }\n}\n\nfragment HomeFeedNavbar_viewer on User {\n  id\n  followedTags(paging: $paging) {\n    tags {\n      __typename\n      id\n      displayTitle\n    }\n    __typename\n  }\n  __typename\n}\n"
+            }
+        ]
+
+        response = requests.post(
+            self.graphql_url, headers=self.headers, json=payload)
+        if self.is_json(response.text) and self._check_for_errors(response.json()):
+            print(response.text)
+            sys.exit(1)
+        if response.status_code == 200:
+            json_response = response.json()
+            tags = json_response[0]['data']['viewer']['followedTags']['tags']
+            return [(tag['id']) for tag in tags]
+        else:
+            print(f"Failed to fetch data {response.status_code}")
+            print(response.text)
+            sys.exit(1)
+
     def _download_image(self, image_url, article_folder):
         images_directory = os.path.join(article_folder, "images")
         # Ensure base and article-specific folder exists
@@ -116,15 +144,17 @@ class MediumScraper:
             }
         ]
 
-        response = requests.post(self.graphql_url, headers=self.headers, json=payload)
+        response = requests.post(
+            self.graphql_url, headers=self.headers, json=payload)
         if self.is_json(response.text) and self._check_for_errors(response.json()):
-                print(response.text)
-                sys.exit(1)
+            print(response.text)
+            sys.exit(1)
         if response.status_code == 200:
             # Parse the JSON response
             json_data = response.json()
             # Extract the clap count
-            clap_count = json_data[0].get("data", {}).get("postResult", {}).get("clapCount", 0)
+            clap_count = json_data[0].get("data", {}).get(
+                "postResult", {}).get("clapCount", 0)
             return clap_count
         else:
             print(f"Failed to fetch clap count: HTTP {response.status_code}")
@@ -139,21 +169,23 @@ class MediumScraper:
                 source = picture.find('source')
                 if source and 'srcset' in source.attrs:
                     srcset = source['srcset']
-                    highest_resolution_image = self._extract_highest_resolution_image(srcset)
+                    highest_resolution_image = self._extract_highest_resolution_image(
+                        srcset)
                     # Create a unique placeholder for each image
                     placeholder = f"{{{{IMAGE_PLACEHOLDER_{i}}}}}"
                     figure.replace_with(placeholder)
-                     # Modified placeholder for markdownify's escaped format
+                    # Modified placeholder for markdownify's escaped format
                     escaped_placeholder = placeholder.replace("_", "\\_")
-                    image_info_list.append((highest_resolution_image, escaped_placeholder))
+                    image_info_list.append(
+                        (highest_resolution_image, escaped_placeholder))
         return image_info_list
 
-
-    def _fetch_and_convert_article_section_to_markdown(self, url):
+    def _fetch_and_convert_article_section_to_markdown(self, url, tag_slug):
         """Fetch an article, convert it to markdown, and save locally."""
         print(f"Fetching article {url}")
         article_folder_name = url.split('/')[-1]
-        article_folder_path = os.path.join("medium-articles", self.tag_slug, str(self.min_claps), article_folder_name)
+        article_folder_path = os.path.join(
+            ARTICLES_DIRECTORY, tag_slug, str(self.min_claps), article_folder_name)
         file_name = f"{article_folder_name}.md"
         file_path = os.path.join(article_folder_path, file_name)
         article_id = hashlib.md5(file_name.lower().encode()).hexdigest()
@@ -171,14 +203,18 @@ class MediumScraper:
                 os.makedirs(article_folder_path)
             article_section = soup.find('article')
             if article_section:
-                image_info_list = self._preprocess_html_for_images(article_section)
-                markdown_content = md(str(article_section), heading_style="ATX")
-                 # Replace placeholders with actual image paths
+                image_info_list = self._preprocess_html_for_images(
+                    article_section)
+                markdown_content = md(
+                    str(article_section), heading_style="ATX")
+                # Replace placeholders with actual image paths
                 for image_url, placeholder in image_info_list:
-                    relative_image_path = self._download_image(image_url, article_folder_path)
+                    relative_image_path = self._download_image(
+                        image_url, article_folder_path)
                     if relative_image_path:
-                        markdown_content = markdown_content.replace(placeholder, f"![]({relative_image_path})", 1)
-                
+                        markdown_content = markdown_content.replace(
+                            placeholder, f"![]({relative_image_path})", 1)
+
                 with open(file_path, 'w', encoding='utf-8') as file:
                     file.write(markdown_content)
                 print(f"Article section saved to {file_path}")
@@ -187,19 +223,32 @@ class MediumScraper:
         else:
             print("Failed to retrieve the article")
 
-    def fetch_posts(self, from_page):
+    def fetch_posts(self, from_page, tag_slug):
         """Fetch posts from Medium and process them."""
+        recommended_feed = tag_slug == "recommended"
         payload = [{
             "operationName": "WebInlineTopicFeedQuery",
             "variables": {
-                "tagSlug": f"{self.tag_slug}",
+                "tagSlug": f"{tag_slug}",
                 "paging": {"from": f"{from_page}", "limit": 25},
                 "skipCache": True
             },
             "query": """query WebInlineTopicFeedQuery($tagSlug: String!, $paging: PagingOptions!, $skipCache: Boolean) { personalisedTagFeed(tagSlug: $tagSlug, paging: $paging, skipCache: $skipCache) { items { ... on TagFeedItem { post { id creator { username } title uniqueSlug __typename } __typename } __typename } pagingInfo { next { source limit from to __typename } __typename } __typename } }"""
         }]
+
+        payload_for_recommended_feed = [{
+            "operationName": "WebInlineRecommendedFeedQuery",
+            "variables": {
+                "forceRank": True,
+                "paging": {"from": f"{from_page}", "limit": 25},
+                "skipCache": True
+            },
+            "query": "query WebInlineRecommendedFeedQuery($paging: PagingOptions, $forceRank: Boolean) {\n  webRecommendedFeed(paging: $paging, forceRank: $forceRank) {\n    items {\n      ...InlineFeed_homeFeedItem\n      reasonString\n      __typename\n    }\n    pagingInfo {\n      next {\n        limit\n        to\n        source\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n}\n\nfragment InlineFeed_homeFeedItem on HomeFeedItem {\n  feedId\n  moduleSourceEncoding\n  reason\n  post {\n    ...InlineFeed_post\n    __typename\n    id\n  }\n  __typename\n}\n\nfragment InlineFeed_post on Post {\n  ...PostPreview_post\n  __typename\n  id\n}\n\nfragment PostPreview_post on Post {\n  id\n  creator {\n    ...PostPreview_user\n    __typename\n    id\n  }\n  collection {\n    ...CardByline_collection\n    ...ExpandablePostByline_collection\n    __typename\n    id\n  }\n  ...InteractivePostBody_postPreview\n  firstPublishedAt\n  isLocked\n  isSeries\n  latestPublishedAt\n  inResponseToCatalogResult {\n    __typename\n  }\n  pinnedAt\n  pinnedByCreatorAt\n  previewImage {\n    id\n    focusPercentX\n    focusPercentY\n    __typename\n  }\n  readingTime\n  sequence {\n    slug\n    __typename\n  }\n  title\n  uniqueSlug\n  ...CardByline_post\n  ...PostFooterActionsBar_post\n  ...InResponseToEntityPreview_post\n  ...PostScrollTracker_post\n  ...HighDensityPreview_post\n  __typename\n}\n\nfragment PostPreview_user on User {\n  __typename\n  name\n  username\n  ...CardByline_user\n  ...ExpandablePostByline_user\n  id\n}\n\nfragment CardByline_user on User {\n  __typename\n  id\n  name\n  username\n  mediumMemberAt\n  socialStats {\n    followerCount\n    __typename\n  }\n  ...useIsVerifiedBookAuthor_user\n  ...userUrl_user\n  ...UserMentionTooltip_user\n}\n\nfragment useIsVerifiedBookAuthor_user on User {\n  verifications {\n    isBookAuthor\n    __typename\n  }\n  __typename\n  id\n}\n\nfragment userUrl_user on User {\n  __typename\n  id\n  customDomainState {\n    live {\n      domain\n      __typename\n    }\n    __typename\n  }\n  hasSubdomain\n  username\n}\n\nfragment UserMentionTooltip_user on User {\n  id\n  name\n  username\n  bio\n  imageId\n  mediumMemberAt\n  membership {\n    tier\n    __typename\n    id\n  }\n  ...UserAvatar_user\n  ...UserFollowButton_user\n  ...useIsVerifiedBookAuthor_user\n  __typename\n}\n\nfragment UserAvatar_user on User {\n  __typename\n  id\n  imageId\n  mediumMemberAt\n  membership {\n    tier\n    __typename\n    id\n  }\n  name\n  username\n  ...userUrl_user\n}\n\nfragment UserFollowButton_user on User {\n  ...UserFollowButtonSignedIn_user\n  ...UserFollowButtonSignedOut_user\n  __typename\n  id\n}\n\nfragment UserFollowButtonSignedIn_user on User {\n  id\n  name\n  __typename\n}\n\nfragment UserFollowButtonSignedOut_user on User {\n  id\n  ...SusiClickable_user\n  __typename\n}\n\nfragment SusiClickable_user on User {\n  ...SusiContainer_user\n  __typename\n  id\n}\n\nfragment SusiContainer_user on User {\n  ...SignInOptions_user\n  ...SignUpOptions_user\n  __typename\n  id\n}\n\nfragment SignInOptions_user on User {\n  id\n  name\n  __typename\n}\n\nfragment SignUpOptions_user on User {\n  id\n  name\n  __typename\n}\n\nfragment ExpandablePostByline_user on User {\n  __typename\n  id\n  name\n  imageId\n  ...userUrl_user\n  ...useIsVerifiedBookAuthor_user\n}\n\nfragment CardByline_collection on Collection {\n  name\n  ...collectionUrl_collection\n  __typename\n  id\n}\n\nfragment collectionUrl_collection on Collection {\n  id\n  domain\n  slug\n  __typename\n}\n\nfragment ExpandablePostByline_collection on Collection {\n  __typename\n  id\n  name\n  domain\n  slug\n}\n\nfragment InteractivePostBody_postPreview on Post {\n  extendedPreviewContent(\n    truncationConfig: {previewParagraphsWordCountThreshold: 400, minimumWordLengthForTruncation: 150, truncateAtEndOfSentence: true, showFullImageCaptions: true, shortformPreviewParagraphsWordCountThreshold: 30, shortformMinimumWordLengthForTruncation: 30}\n  ) {\n    bodyModel {\n      ...PostBody_bodyModel\n      __typename\n    }\n    isFullContent\n    __typename\n  }\n  __typename\n  id\n}\n\nfragment PostBody_bodyModel on RichText {\n  sections {\n    name\n    startIndex\n    textLayout\n    imageLayout\n    backgroundImage {\n      id\n      originalHeight\n      originalWidth\n      __typename\n    }\n    videoLayout\n    backgroundVideo {\n      videoId\n      originalHeight\n      originalWidth\n      previewImageId\n      __typename\n    }\n    __typename\n  }\n  paragraphs {\n    id\n    ...PostBodySection_paragraph\n    __typename\n  }\n  ...normalizedBodyModel_richText\n  __typename\n}\n\nfragment PostBodySection_paragraph on Paragraph {\n  name\n  ...PostBodyParagraph_paragraph\n  __typename\n  id\n}\n\nfragment PostBodyParagraph_paragraph on Paragraph {\n  name\n  type\n  ...ImageParagraph_paragraph\n  ...TextParagraph_paragraph\n  ...IframeParagraph_paragraph\n  ...MixtapeParagraph_paragraph\n  ...CodeBlockParagraph_paragraph\n  __typename\n  id\n}\n\nfragment ImageParagraph_paragraph on Paragraph {\n  href\n  layout\n  metadata {\n    id\n    originalHeight\n    originalWidth\n    focusPercentX\n    focusPercentY\n    alt\n    __typename\n  }\n  ...Markups_paragraph\n  ...ParagraphRefsMapContext_paragraph\n  ...PostAnnotationsMarker_paragraph\n  __typename\n  id\n}\n\nfragment Markups_paragraph on Paragraph {\n  name\n  text\n  hasDropCap\n  dropCapImage {\n    ...MarkupNode_data_dropCapImage\n    __typename\n    id\n  }\n  markups {\n    ...Markups_markup\n    __typename\n  }\n  __typename\n  id\n}\n\nfragment MarkupNode_data_dropCapImage on ImageMetadata {\n  ...DropCap_image\n  __typename\n  id\n}\n\nfragment DropCap_image on ImageMetadata {\n  id\n  originalHeight\n  originalWidth\n  __typename\n}\n\nfragment Markups_markup on Markup {\n  type\n  start\n  end\n  href\n  anchorType\n  userId\n  linkMetadata {\n    httpStatus\n    __typename\n  }\n  __typename\n}\n\nfragment ParagraphRefsMapContext_paragraph on Paragraph {\n  id\n  name\n  text\n  __typename\n}\n\nfragment PostAnnotationsMarker_paragraph on Paragraph {\n  ...PostViewNoteCard_paragraph\n  __typename\n  id\n}\n\nfragment PostViewNoteCard_paragraph on Paragraph {\n  name\n  __typename\n  id\n}\n\nfragment TextParagraph_paragraph on Paragraph {\n  type\n  hasDropCap\n  codeBlockMetadata {\n    mode\n    lang\n    __typename\n  }\n  ...Markups_paragraph\n  ...ParagraphRefsMapContext_paragraph\n  __typename\n  id\n}\n\nfragment IframeParagraph_paragraph on Paragraph {\n  type\n  iframe {\n    mediaResource {\n      id\n      iframeSrc\n      iframeHeight\n      iframeWidth\n      title\n      __typename\n    }\n    __typename\n  }\n  layout\n  ...Markups_paragraph\n  __typename\n  id\n}\n\nfragment MixtapeParagraph_paragraph on Paragraph {\n  type\n  mixtapeMetadata {\n    href\n    mediaResource {\n      mediumCatalog {\n        id\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n  ...GenericMixtapeParagraph_paragraph\n  __typename\n  id\n}\n\nfragment GenericMixtapeParagraph_paragraph on Paragraph {\n  text\n  mixtapeMetadata {\n    href\n    thumbnailImageId\n    __typename\n  }\n  markups {\n    start\n    end\n    type\n    href\n    __typename\n  }\n  __typename\n  id\n}\n\nfragment CodeBlockParagraph_paragraph on Paragraph {\n  codeBlockMetadata {\n    lang\n    mode\n    __typename\n  }\n  __typename\n  id\n}\n\nfragment normalizedBodyModel_richText on RichText {\n  paragraphs {\n    ...normalizedBodyModel_richText_paragraphs\n    __typename\n  }\n  sections {\n    startIndex\n    ...getSectionEndIndex_section\n    __typename\n  }\n  ...getParagraphStyles_richText\n  ...getParagraphSpaces_richText\n  __typename\n}\n\nfragment normalizedBodyModel_richText_paragraphs on Paragraph {\n  markups {\n    ...normalizedBodyModel_richText_paragraphs_markups\n    __typename\n  }\n  codeBlockMetadata {\n    lang\n    mode\n    __typename\n  }\n  ...getParagraphHighlights_paragraph\n  ...getParagraphPrivateNotes_paragraph\n  __typename\n  id\n}\n\nfragment normalizedBodyModel_richText_paragraphs_markups on Markup {\n  type\n  __typename\n}\n\nfragment getParagraphHighlights_paragraph on Paragraph {\n  name\n  __typename\n  id\n}\n\nfragment getParagraphPrivateNotes_paragraph on Paragraph {\n  name\n  __typename\n  id\n}\n\nfragment getSectionEndIndex_section on Section {\n  startIndex\n  __typename\n}\n\nfragment getParagraphStyles_richText on RichText {\n  paragraphs {\n    text\n    type\n    __typename\n  }\n  sections {\n    ...getSectionEndIndex_section\n    __typename\n  }\n  __typename\n}\n\nfragment getParagraphSpaces_richText on RichText {\n  paragraphs {\n    layout\n    metadata {\n      originalHeight\n      originalWidth\n      id\n      __typename\n    }\n    type\n    ...paragraphExtendsImageGrid_paragraph\n    __typename\n  }\n  ...getSeriesParagraphTopSpacings_richText\n  ...getPostParagraphTopSpacings_richText\n  __typename\n}\n\nfragment paragraphExtendsImageGrid_paragraph on Paragraph {\n  layout\n  type\n  __typename\n  id\n}\n\nfragment getSeriesParagraphTopSpacings_richText on RichText {\n  paragraphs {\n    id\n    __typename\n  }\n  sections {\n    ...getSectionEndIndex_section\n    __typename\n  }\n  __typename\n}\n\nfragment getPostParagraphTopSpacings_richText on RichText {\n  paragraphs {\n    type\n    layout\n    text\n    codeBlockMetadata {\n      lang\n      mode\n      __typename\n    }\n    __typename\n  }\n  sections {\n    ...getSectionEndIndex_section\n    __typename\n  }\n  __typename\n}\n\nfragment CardByline_post on Post {\n  ...DraftStatus_post\n  ...Star_post\n  ...shouldShowPublishedInStatus_post\n  __typename\n  id\n}\n\nfragment DraftStatus_post on Post {\n  id\n  pendingCollection {\n    id\n    creator {\n      id\n      __typename\n    }\n    ...BoldCollectionName_collection\n    __typename\n  }\n  statusForCollection\n  creator {\n    id\n    __typename\n  }\n  isPublished\n  __typename\n}\n\nfragment BoldCollectionName_collection on Collection {\n  id\n  name\n  __typename\n}\n\nfragment Star_post on Post {\n  id\n  creator {\n    id\n    __typename\n  }\n  __typename\n}\n\nfragment shouldShowPublishedInStatus_post on Post {\n  statusForCollection\n  isPublished\n  __typename\n  id\n}\n\nfragment PostFooterActionsBar_post on Post {\n  id\n  visibility\n  allowResponses\n  postResponses {\n    count\n    __typename\n  }\n  isLimitedState\n  creator {\n    id\n    __typename\n  }\n  collection {\n    id\n    __typename\n  }\n  ...MultiVote_post\n  ...PostSharePopover_post\n  ...OverflowMenuButtonWithNegativeSignal_post\n  ...BookmarkButton_post\n  __typename\n}\n\nfragment MultiVote_post on Post {\n  id\n  creator {\n    id\n    ...SusiClickable_user\n    __typename\n  }\n  isPublished\n  ...SusiClickable_post\n  collection {\n    id\n    slug\n    __typename\n  }\n  isLimitedState\n  ...MultiVoteCount_post\n  __typename\n}\n\nfragment SusiClickable_post on Post {\n  id\n  mediumUrl\n  ...SusiContainer_post\n  __typename\n}\n\nfragment SusiContainer_post on Post {\n  id\n  __typename\n}\n\nfragment MultiVoteCount_post on Post {\n  id\n  __typename\n}\n\nfragment PostSharePopover_post on Post {\n  id\n  mediumUrl\n  title\n  isPublished\n  isLocked\n  ...usePostUrl_post\n  ...FriendLink_post\n  __typename\n}\n\nfragment usePostUrl_post on Post {\n  id\n  creator {\n    ...userUrl_user\n    __typename\n    id\n  }\n  collection {\n    id\n    domain\n    slug\n    __typename\n  }\n  isSeries\n  mediumUrl\n  sequence {\n    slug\n    __typename\n  }\n  uniqueSlug\n  __typename\n}\n\nfragment FriendLink_post on Post {\n  id\n  ...SusiClickable_post\n  ...useCopyFriendLink_post\n  ...UpsellClickable_post\n  __typename\n}\n\nfragment useCopyFriendLink_post on Post {\n  ...usePostUrl_post\n  __typename\n  id\n}\n\nfragment UpsellClickable_post on Post {\n  id\n  collection {\n    id\n    __typename\n  }\n  sequence {\n    sequenceId\n    __typename\n  }\n  creator {\n    id\n    __typename\n  }\n  __typename\n}\n\nfragment OverflowMenuButtonWithNegativeSignal_post on Post {\n  id\n  visibility\n  ...OverflowMenuWithNegativeSignal_post\n  __typename\n}\n\nfragment OverflowMenuWithNegativeSignal_post on Post {\n  id\n  creator {\n    id\n    __typename\n  }\n  collection {\n    id\n    __typename\n  }\n  ...OverflowMenuItemUndoClaps_post\n  ...AddToCatalogBase_post\n  __typename\n}\n\nfragment OverflowMenuItemUndoClaps_post on Post {\n  id\n  clapCount\n  ...ClapMutation_post\n  __typename\n}\n\nfragment ClapMutation_post on Post {\n  __typename\n  id\n  clapCount\n  ...MultiVoteCount_post\n}\n\nfragment AddToCatalogBase_post on Post {\n  id\n  isPublished\n  ...SusiClickable_post\n  __typename\n}\n\nfragment BookmarkButton_post on Post {\n  visibility\n  ...SusiClickable_post\n  ...AddToCatalogBookmarkButton_post\n  __typename\n  id\n}\n\nfragment AddToCatalogBookmarkButton_post on Post {\n  ...AddToCatalogBase_post\n  __typename\n  id\n}\n\nfragment InResponseToEntityPreview_post on Post {\n  id\n  inResponseToEntityType\n  __typename\n}\n\nfragment PostScrollTracker_post on Post {\n  id\n  collection {\n    id\n    __typename\n  }\n  sequence {\n    sequenceId\n    __typename\n  }\n  __typename\n}\n\nfragment HighDensityPreview_post on Post {\n  id\n  title\n  previewImage {\n    id\n    focusPercentX\n    focusPercentY\n    __typename\n  }\n  extendedPreviewContent(\n    truncationConfig: {previewParagraphsWordCountThreshold: 400, minimumWordLengthForTruncation: 150, truncateAtEndOfSentence: true, showFullImageCaptions: true, shortformPreviewParagraphsWordCountThreshold: 30, shortformMinimumWordLengthForTruncation: 30}\n  ) {\n    subtitle\n    __typename\n  }\n  ...HighDensityFooter_post\n  __typename\n}\n\nfragment HighDensityFooter_post on Post {\n  id\n  readingTime\n  tags {\n    ...TopicPill_tag\n    __typename\n  }\n  ...BookmarkButton_post\n  ...ExpandablePostCardOverflowButton_post\n  ...OverflowMenuButtonWithNegativeSignal_post\n  __typename\n}\n\nfragment TopicPill_tag on Tag {\n  __typename\n  id\n  displayTitle\n  normalizedTagSlug\n}\n\nfragment ExpandablePostCardOverflowButton_post on Post {\n  creator {\n    id\n    __typename\n  }\n  ...ExpandablePostCardReaderButton_post\n  __typename\n  id\n}\n\nfragment ExpandablePostCardReaderButton_post on Post {\n  id\n  collection {\n    id\n    __typename\n  }\n  creator {\n    id\n    __typename\n  }\n  clapCount\n  ...ClapMutation_post\n  __typename\n}\n"
+        }]
+
         print(f"Fetching posts starting from index {from_page}...")
-        response = requests.post(self.graphql_url, headers=self.headers, json=payload)
+        response = requests.post(self.graphql_url, headers=self.headers,
+                                 json=payload if not recommended_feed else payload_for_recommended_feed)
         if response.status_code == 200:
             data = response.json()
 
@@ -207,8 +256,8 @@ class MediumScraper:
                 print(response.text)
                 return False
 
-            if data[0]['data']['personalisedTagFeed']['items']:
-                for item in data[0]['data']['personalisedTagFeed']['items']:
+            if data[0]['data']['personalisedTagFeed' if not recommended_feed else 'webRecommendedFeed']['items']:
+                for item in data[0]['data']['personalisedTagFeed' if not recommended_feed else 'webRecommendedFeed']['items']:
                     post = item['post']
                     post_id = post['id']
                     username = post['creator']['username']
@@ -217,32 +266,92 @@ class MediumScraper:
                     print(full_url)
                     clap_count = self._fetch_clap_count(post_id)
                     if clap_count < self.min_claps:
-                        print(f"Skipping this article {full_url}, since the number of it's claps {clap_count} is lower than the minimum of {self.min_claps}.")
+                        print(
+                            f"Skipping this article {full_url}, since the number of it's claps {clap_count} is lower than the minimum of {self.min_claps}.")
                         continue
-                    self._fetch_and_convert_article_section_to_markdown(full_url)
+                    self._fetch_and_convert_article_section_to_markdown(
+                        full_url, tag_slug)
                     time.sleep(random.uniform(1, 5))
                 return True
             else:
-                print(f"No more posts found. The server returned the following status code '{response.status_code}' and the following response payload '{response.text}'.")
+                print(
+                    f"No more posts found. The server returned the following status code '{response.status_code}' and the following response payload '{response.text}'.")
                 return False
         else:
             print(f"Failed to retrieve content: HTTP {response.status_code}")
             print("Response text:", response.text)
             return False
 
-    def run(self):
+    def list_articles_with_min_claps(self):
+        articles_with_min_claps = []
+
+        # Check if the base directory exists
+        if not os.path.exists(ARTICLES_DIRECTORY):
+            print(f"The directory '{ARTICLES_DIRECTORY}' does not exist.")
+            return []
+
+        # Traverse each tag directory
+        for tag_slug in os.listdir(ARTICLES_DIRECTORY):
+            tag_path = os.path.join(ARTICLES_DIRECTORY, tag_slug)
+            if not os.path.isdir(tag_path):  # Skip if not a directory
+                continue
+
+            # Traverse each clap count directory
+            for clap_count_dir in os.listdir(tag_path):
+                try:
+                    if int(clap_count_dir) >= self.min_claps:
+                        clap_count_path = os.path.join(
+                            tag_path, clap_count_dir)
+                        for article_folder in os.listdir(clap_count_path):
+                            article_folder_path = os.path.join(
+                                clap_count_path, article_folder)
+                            # List all articles in the directory
+                            if os.path.isdir(article_folder_path):
+                                for article_file in os.listdir(article_folder_path):
+                                    if article_file.endswith('.md'):
+                                        title = article_file.rsplit('.', 1)[0]
+                                        title = title.replace('-', ' ')
+                                        title = title.title()
+                                        articles_with_min_claps += [title]
+                except ValueError:
+                    # Skip directories that do not represent a numeric clap count
+                    continue
+
+        with open("articles_with_min_claps.txt", 'w', encoding='utf-8') as file:
+            for title, path in articles_with_min_claps:
+                file.write(f"{title}: {path}\n")
+
+    def scrap(self):
         """Entry point to start the scraper."""
-        from_page = 0
-        while True:
-            if not self.fetch_posts(from_page=from_page):
-                break
-            from_page += 25
+        for tag_slug in self.tag_slugs:
+            print(f"Fetching articles for the follwing tag slug '{tag_slug}'.")
+            from_page = 0
+            while True:
+                if not self.fetch_posts(from_page=from_page, tag_slug=tag_slug):
+                    break
+                from_page += 25
+            time.sleep(60)
+
+
+def main(min_claps, list_articles_with_min_claps):
+    scraper = MediumScraper(min_claps=min_claps)
+    if list_articles_with_min_claps:
+        scraper.list_articles_with_min_claps()
+    else:
+        scraper.scrap()
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python script.py <tagSlug> <min_claps>")
-        sys.exit(1)
-    tag_slug = sys.argv[1]
-    min_claps = int(sys.argv[2])
-    scraper = MediumScraper(tag_slug=tag_slug, min_claps=min_claps)
-    scraper.run()
+    # Initialize the argument parser
+    parser = argparse.ArgumentParser(description="Run the Medium scraper with optional clap filter.")
+    
+    # Add arguments
+    parser.add_argument('min_claps', type=int, nargs='?', default=0, 
+                        help='Minimum number of claps for articles to be scraped. Default is 0.')
+    parser.add_argument('-l', '--use-bla', action='store_true',
+                        help='Use the bla method instead of the default scrap method.')
+    
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Execute the main function with the parsed arguments
+    main(args.min_claps, args.use_bla)
