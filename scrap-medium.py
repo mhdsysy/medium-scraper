@@ -330,7 +330,7 @@ class MediumScraper:
                 if not self.fetch_posts(from_page=from_page, tag_slug=tag_slug):
                     break
                 from_page += 25
-            time.sleep(60)
+            time.sleep(1000)
 
 
 def main(min_claps, list_articles_with_min_claps):
