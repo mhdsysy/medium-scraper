@@ -10,19 +10,35 @@ from dotenv import load_dotenv
 from markdownify import markdownify as md
 import hashlib
 
-ARTICLES_DIRECTORY = 'medium-articles'
-
 # Load environment variables
 load_dotenv()
 
+ARTICLES_DIRECTORY = 'medium-articles'
+GRAPHQL_URL = 'https://medium.com/_/graphql'
+COOKIE_VALUE = os.getenv("COOKIE")
+HEADERS = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "en",
+            "Cache-Control": "max-age=0",
+            "Cookie": f'{COOKIE_VALUE}',  # Use the cookie value from the .env file
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "sec-ch-ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "none",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1"
+        }
 
 class MediumScraper:
-    def __init__(self, min_claps):
-        self.min_claps = min_claps
-        self.headers = self._load_headers()
-        self.graphql_url = 'https://medium.com/_/graphql'
+    def __init__(self, mode='select'):
         self.downloaded_articles = self._generate_downloaded_articles_hashset()
         self.tag_slugs = self._fetch_tag_slugs()
+        self.mode = mode
+        self.chosen_tags = None
 
     @staticmethod
     def is_json(response_text):
@@ -54,55 +70,39 @@ class MediumScraper:
         return highest_resolution_image
 
     @staticmethod
-    def _load_headers():
-        """Load request headers including environment variables."""
-        cookie_value = os.getenv("COOKIE")
-        return {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en",
-            "Cache-Control": "max-age=0",
-            # Use the cookie value from the .env file
-            "Cookie": f'{cookie_value}',
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-        }
-
-    @staticmethod
     def _generate_downloaded_articles_hashset():
         """Generate a hashset of all downloaded articles' identifiers."""
         hashset = set()
         for root, dirs, files in os.walk(ARTICLES_DIRECTORY):
             for file in files:
                 if file.endswith(".md"):
-                    file_name = file.title().lower()
+                    file_name = file.title().lower().removesuffix(".md").strip()
                     print(f"Caching file {file_name}")
-                    # Use a hash of the file name as the unique identifier
-                    article_id = hashlib.md5(file_name.encode()).hexdigest()
-                    hashset.add(article_id)
+                    hashset.add(file_name)
         return hashset
 
-    def _fetch_tag_slugs(self):
+    @staticmethod
+    def _fetch_tag_slugs():
         payload = [
             {
                 "operationName": "HomeMainContentHeaderQuery",
                 "variables": {},
-                "query": "query HomeMainContentHeaderQuery($paging: PagingOptions) {\n  viewer {\n    ...HomeFeedNavbar_viewer\n    __typename\n  }\n}\n\nfragment HomeFeedNavbar_viewer on User {\n  id\n  followedTags(paging: $paging) {\n    tags {\n      __typename\n      id\n      displayTitle\n    }\n    __typename\n  }\n  __typename\n}\n"
+                "query": "query HomeMainContentHeaderQuery($paging: PagingOptions) {\n  viewer {\n    ...HomeFeedNavbar_viewer\n    __typename\n  } \n}\n\nfragment HomeFeedNavbar_viewer on User {\n  id\n  followedTags(paging: $paging) {\n    tags {\n      __typename\n         id\n      displayTitle\n    }\n    __typename\n  }\n  __typename\n}\n"
             }
         ]
-
-        response = requests.post(
-            self.graphql_url, headers=self.headers, json=payload)
-        if self.is_json(response.text) and self._check_for_errors(response.json()):
+        response = requests.post(GRAPHQL_URL, headers=HEADERS, json=payload)
+        if MediumScraper.is_json(response.text) and MediumScraper._check_for_errors(response.json()):
             print(response.text)
             sys.exit(1)
         if response.status_code == 200:
             json_response = response.json()
             tags = json_response[0]['data']['viewer']['followedTags']['tags']
-            return [(tag['id']) for tag in tags]
+            return sorted([(tag['id']) for tag in tags])
         else:
             print(f"Failed to fetch data {response.status_code}")
             print(response.text)
             sys.exit(1)
+
 
     def _download_image(self, image_url, article_folder):
         images_directory = os.path.join(article_folder, "images")
@@ -116,7 +116,7 @@ class MediumScraper:
 
         # Download and save the image
         print(f"Downloading image: {image_url} to {image_path}")
-        response = requests.get(image_url, stream=True, headers=self.headers)
+        response = requests.get(image_url, stream=True, headers=HEADERS)
         if response.status_code == 200:
             if self.is_json(response.text) and self._check_for_errors(response.json()):
                 print(response.text)
@@ -131,6 +131,13 @@ class MediumScraper:
             print(f"Failed to download {image_url}")
             return None
 
+    def _get_clap_range_for_clap_count(self, clap_count):
+        """ Determine the clap range folder name based on clap count. """
+        if clap_count == 0:
+            return '0'
+        range_start = (clap_count // 500) * 500
+        return f"{range_start}-{range_start + 499}"
+    
     # Function to fetch clap count for a given Medium post
     def _fetch_clap_count(self, post_id):
         # Define the GraphQL query and variables
@@ -144,8 +151,7 @@ class MediumScraper:
             }
         ]
 
-        response = requests.post(
-            self.graphql_url, headers=self.headers, json=payload)
+        response = requests.post(GRAPHQL_URL, headers=HEADERS, json=payload)
         if self.is_json(response.text) and self._check_for_errors(response.json()):
             print(response.text)
             sys.exit(1)
@@ -180,19 +186,17 @@ class MediumScraper:
                         (highest_resolution_image, escaped_placeholder))
         return image_info_list
 
-    def _fetch_and_convert_article_section_to_markdown(self, url, tag_slug):
+    def _fetch_and_convert_article_section_to_markdown(self, url, tag_slug, clap_range):
         """Fetch an article, convert it to markdown, and save locally."""
         print(f"Fetching article {url}")
-        article_folder_name = url.split('/')[-1]
-        article_folder_path = os.path.join(
-            ARTICLES_DIRECTORY, tag_slug, str(self.min_claps), article_folder_name)
+        article_folder_name = url.split('/')[-1].strip()
+        article_folder_path = os.path.join(ARTICLES_DIRECTORY, tag_slug, str(clap_range), article_folder_name)
         file_name = f"{article_folder_name}.md"
         file_path = os.path.join(article_folder_path, file_name)
-        article_id = hashlib.md5(file_name.lower().encode()).hexdigest()
-        if article_id in self.downloaded_articles:
+        if article_folder_name in self.downloaded_articles:
             print(f"Article already downloaded: {url}")
             return  # Skip downloading this article
-        response = requests.get(url, headers=self.headers)
+        response = requests.get(url, headers=HEADERS)
         if response.status_code == 200:
             if self.is_json(response.text) and self._check_for_errors(response.json()):
                 print(response.text)
@@ -203,17 +207,13 @@ class MediumScraper:
                 os.makedirs(article_folder_path)
             article_section = soup.find('article')
             if article_section:
-                image_info_list = self._preprocess_html_for_images(
-                    article_section)
-                markdown_content = md(
-                    str(article_section), heading_style="ATX")
+                image_info_list = self._preprocess_html_for_images(article_section)
+                markdown_content = md(str(article_section), heading_style="ATX")
                 # Replace placeholders with actual image paths
                 for image_url, placeholder in image_info_list:
-                    relative_image_path = self._download_image(
-                        image_url, article_folder_path)
+                    relative_image_path = self._download_image(image_url, article_folder_path)
                     if relative_image_path:
-                        markdown_content = markdown_content.replace(
-                            placeholder, f"![]({relative_image_path})", 1)
+                        markdown_content = markdown_content.replace(placeholder, f"![]({relative_image_path})", 1)
 
                 with open(file_path, 'w', encoding='utf-8') as file:
                     file.write(markdown_content)
@@ -247,8 +247,7 @@ class MediumScraper:
         }]
 
         print(f"Fetching posts starting from index {from_page}...")
-        response = requests.post(self.graphql_url, headers=self.headers,
-                                 json=payload if not recommended_feed else payload_for_recommended_feed)
+        response = requests.post(GRAPHQL_URL, headers=HEADERS, json=payload if not recommended_feed else payload_for_recommended_feed)
         if response.status_code == 200:
             data = response.json()
 
@@ -265,12 +264,8 @@ class MediumScraper:
                     full_url = f"https://medium.com/@{username}/{postSlug}"
                     print(full_url)
                     clap_count = self._fetch_clap_count(post_id)
-                    if clap_count < self.min_claps:
-                        print(
-                            f"Skipping this article {full_url}, since the number of it's claps {clap_count} is lower than the minimum of {self.min_claps}.")
-                        continue
-                    self._fetch_and_convert_article_section_to_markdown(
-                        full_url, tag_slug)
+                    clap_range = self._get_clap_range_for_clap_count(clap_count)
+                    self._fetch_and_convert_article_section_to_markdown(full_url, tag_slug, clap_range=clap_range)
                     time.sleep(random.uniform(1, 5))
                 return True
             else:
@@ -282,76 +277,46 @@ class MediumScraper:
             print("Response text:", response.text)
             return False
 
-    def list_articles_with_min_claps(self):
-        articles_with_min_claps = []
-
-        # Check if the base directory exists
-        if not os.path.exists(ARTICLES_DIRECTORY):
-            print(f"The directory '{ARTICLES_DIRECTORY}' does not exist.")
-            return []
-
-        # Traverse each tag directory
-        for tag_slug in os.listdir(ARTICLES_DIRECTORY):
-            tag_path = os.path.join(ARTICLES_DIRECTORY, tag_slug)
-            if not os.path.isdir(tag_path):  # Skip if not a directory
-                continue
-
-            # Traverse each clap count directory
-            for clap_count_dir in os.listdir(tag_path):
-                try:
-                    if int(clap_count_dir) >= self.min_claps:
-                        clap_count_path = os.path.join(
-                            tag_path, clap_count_dir)
-                        for article_folder in os.listdir(clap_count_path):
-                            article_folder_path = os.path.join(
-                                clap_count_path, article_folder)
-                            # List all articles in the directory
-                            if os.path.isdir(article_folder_path):
-                                for article_file in os.listdir(article_folder_path):
-                                    if article_file.endswith('.md'):
-                                        title = article_file.rsplit('.', 1)[0]
-                                        title = title.replace('-', ' ')
-                                        title = title.title()
-                                        articles_with_min_claps += [title]
-                except ValueError:
-                    # Skip directories that do not represent a numeric clap count
-                    continue
-
-        with open("articles_with_min_claps.txt", 'w', encoding='utf-8') as file:
-            for title, path in articles_with_min_claps:
-                file.write(f"{title}: {path}\n")
-
     def scrap(self):
-        """Entry point to start the scraper."""
-        for tag_slug in self.tag_slugs:
-            print(f"Fetching articles for the follwing tag slug '{tag_slug}'.")
-            from_page = 0
-            while True:
-                if not self.fetch_posts(from_page=from_page, tag_slug=tag_slug):
-                    break
-                from_page += 25
-            time.sleep(1000)
+        """Entry point to start the scraper based on mode."""
+        if self.mode == 'select' and self.chosen_tags:
+            for tag_slug in self.chosen_tags:
+                self._scrap_tag(tag_slug)
+        elif self.mode == 'all':
+            for tag_slug in self.tag_slugs:
+                self._scrap_tag(tag_slug)
+
+    def _scrap_tag(self, tag_slug):
+        """Helper method to scrape articles for a single tag slug."""
+        print(f"Fetching articles for the tag slug '{tag_slug}'.")
+        from_page = 0
+        while True:
+            if not self.fetch_posts(from_page=from_page, tag_slug=tag_slug):
+                break
+            from_page += 25
+        time.sleep(1000)
 
 
-def main(min_claps, list_articles_with_min_claps):
-    scraper = MediumScraper(min_claps=min_claps)
-    if list_articles_with_min_claps:
-        scraper.list_articles_with_min_claps()
-    else:
-        scraper.scrap()
-
-if __name__ == "__main__":
-    # Initialize the argument parser
-    parser = argparse.ArgumentParser(description="Run the Medium scraper with optional clap filter.")
-    
-    # Add arguments
-    parser.add_argument('min_claps', type=int, nargs='?', default=0, 
-                        help='Minimum number of claps for articles to be scraped. Default is 0.')
-    parser.add_argument('-l', '--use-bla', action='store_true',
-                        help='Use the bla method instead of the default scrap method.')
-    
-    # Parse arguments
+def main():
+    parser = argparse.ArgumentParser(description='Medium Scraper Options')
+    parser.add_argument('--mode', type=str, choices=['all', 'select'], default='select', help='Mode to scrape: all tag slugs or select specific ones')
     args = parser.parse_args()
 
-    # Execute the main function with the parsed arguments
-    main(args.min_claps, args.use_bla)
+    scraper = MediumScraper()
+
+    if args.mode == 'select':
+        print("Available tag slugs:")
+        for idx, tag in enumerate(scraper.tag_slugs):
+            print(f"{idx + 1}. {tag}")
+
+        selected_indices = input("Enter the numbers of the tag slugs you want to scrape, separated by commas (e.g., 1,4,5): ")
+        chosen_tags = [scraper.tag_slugs[int(idx) - 1] for idx in selected_indices.split(',') if idx.strip().isdigit() and int(idx) <= len(scraper.tag_slugs)]
+
+        scraper.chosen_tags = chosen_tags
+    else:
+        scraper.mode = 'all'
+
+    scraper.scrap()
+
+if __name__ == "__main__":
+    main()
