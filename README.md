@@ -1,58 +1,102 @@
 # Medium Scraper
 
-## Overview
-This project is a Python-based scraper for Medium articles. It fetches posts based on a specified tag slug, downloads associated images, converts the article sections into Markdown format, and saves them locally. This tool is particularly useful for researchers, content creators, and anyone interested in archiving or analyzing articles from Medium.
+This project is a Medium article scraper that fetches articles based on specified tags, converts them to Markdown, and saves them locally. It uses environment variables for sensitive data, employs GraphQL for fetching data, and handles image downloads.
 
 ## Features
-- Fetch articles from Medium by tag slug.
-- Download images found within the articles.
-- Convert article sections to Markdown format.
-- Save articles and images in a structured local directory.
+
+- Fetch articles from Medium based on specified tags.
+- Convert fetched articles to Markdown.
+- Download and include images in the articles.
+- Save articles locally in a structured directory format.
+- Handle errors and invalid JSON responses gracefully.
 
 ## Prerequisites
-Before you begin, ensure you have met the following requirements:
-- Python 3.6+
-- `requests`, `bs4`, `markdownify`, and `python-dotenv` libraries installed.
-- A `.env` file with your Medium cookie for authenticated requests.
+
+- Python 3.6 or higher
+- Medium account cookie for authentication
+- `.env` file with the following environment variable:
+  - `COOKIE`
 
 ## Installation
-Clone this repository to your local machine:
-```
-git clone https://github.com/yourgithubusername/medium-scraper.git
-cd medium-scraper
-```
 
-Install the required Python packages:
-```
-pip install -r requirements.txt
-```
+1. Clone the repository:
+    ```bash
+    git clone https://github.com/yourusername/medium-scraper.git
+    cd medium-scraper
+    ```
+
+2. Create a virtual environment and activate it:
+    ```bash
+    python -m venv venv
+    source venv/bin/activate # On Windows use `venv\Scripts\activate`
+    ```
+
+3. Install the required packages:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+4. Create a `.env` file in the root directory of the project and add your Medium cookie:
+    ```bash
+    echo "COOKIE=your_medium_cookie_here" > .env
+    ```
 
 ## Usage
-To use the Medium Scraper, run the following command from the root of your project directory:
-```
-python medium_scraper.py <tagSlug>
-```
-Replace `<tagSlug>` with the actual slug of the tag you're interested in.
 
-For example:
-```
-python medium_scraper.py technology
+The script can operate in two modes: `all` and `select`.
+
+- `all`: Scrape articles for all followed tags.
+- `select`: Select specific tags to scrape articles for.
+
+### Command Line Options
+
+- `--mode`: Mode to scrape (`all` or `select`). Default is `select`.
+
+### Run the Scraper
+
+```bash
+python medium_scraper.py --mode select
 ```
 
-## Configuration
-- Ensure your `.env` file is set up correctly in the root directory with the following content:
-```
-COOKIE=your_cookie_here
-```
-Replace `your_cookie_here` with your actual Medium cookie value.
+In `select` mode, you will be prompted to choose tags from the available list.
 
-## Contributing
-Contributions to this project are welcome. To contribute:
-1. Fork the repository.
-2. Create a new branch (`git checkout -b feature/AmazingFeature`).
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`).
-4. Push to the branch (`git push origin feature/AmazingFeature`).
-5. Open a pull request.
+## Directory Structure
 
-## License
-Distributed under the MIT License. See `LICENSE` for more information.
+Articles are saved in the `medium-articles` directory, organized by tag and clap count ranges.
+
+```
+medium-articles/
+├── tag_slug_1/
+│   ├── 0-499/
+│   │   └── article-title.md
+│   ├── 500-999/
+│   │   └── another-article-title.md
+│   └── images/
+│       └── hashed_image_name.png
+├── tag_slug_2/
+│   └── ...
+└── ...
+```
+
+## Script Explanation
+
+### Key Classes and Functions
+
+- **`MediumScraper`**: Main class for scraping Medium articles.
+  - **`__init__`**: Initializes the scraper, loads downloaded articles and tag slugs.
+  - **`is_json`**: Checks if a response is JSON.
+  - **`_check_for_errors`**: Checks for errors in a JSON response.
+  - **`_extract_highest_resolution_image`**: Extracts the highest resolution image URL from `srcset`.
+  - **`_generate_downloaded_articles_hashset`**: Generates a hash set of downloaded articles.
+  - **`_fetch_tag_slugs`**: Fetches tag slugs from Medium.
+  - **`_download_image`**: Downloads an image and saves it locally.
+  - **`_get_clap_range_for_clap_count`**: Determines the clap range based on clap count.
+  - **`_fetch_clap_count`**: Fetches the clap count for a given post.
+  - **`_preprocess_html_for_images`**: Preprocesses HTML to handle images.
+  - **`_fetch_and_convert_article_section_to_markdown`**: Fetches an article and converts it to Markdown.
+  - **`fetch_posts`**: Fetches posts from Medium and processes them.
+  - **`scrap`**: Entry point to start the scraper.
+  - **`_scrap_tag`**: Helper method to scrape articles for a single tag slug.
+
+- **`main`**: Parses command line arguments and initializes the scraper.
+
